@@ -41,7 +41,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000", 
         "https://temiladeafo-portfolio.vercel.app",
-        "https://portfolio-zm76.onrender.com"
+        "https://portfolio-3z3s.onrender.com"
         ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
