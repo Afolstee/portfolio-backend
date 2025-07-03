@@ -14,13 +14,34 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import jwt
 import bcrypt
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, Boolean
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
 import logging
 import json
+import firebase_admin
+from firebase_admin import credentials, firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 load_dotenv()
+
+# Firebase setup
+def initialize_firebase():
+    try:
+        # Check if Firebase is already initialized
+        firebase_admin.get_app()
+    except ValueError:
+        # Initialize Firebase
+        if os.getenv("FIREBASE_CREDENTIALS_PATH"):
+            # Use service account file
+            cred = credentials.Certificate(os.getenv("FIREBASE_CREDENTIALS_PATH"))
+        else:
+            # Use service account JSON from environment variable
+            firebase_config = json.loads(os.getenv("FIREBASE_CREDENTIALS", "{}"))
+            cred = credentials.Certificate(firebase_config)
+        
+        firebase_admin.initialize_app(cred)
+
+# Initialize Firebase
+initialize_firebase()
+db = firestore.client()
 
 app = FastAPI()
 
@@ -53,30 +74,9 @@ security = HTTPBearer()
 SECRET_KEY = os.getenv("SECRET_KEY", "ud-YFzJu4XJPAx38LLP5ds6u6y2qwu94UCcbiDmOLVY")
 ALGORITHM = "HS256"
 
-# Database setup
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./portfolio.db")
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
-# Database Models
-class Contact(Base):
-    __tablename__ = "contacts"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(100), nullable=False)
-    email = Column(String(100), nullable=False)
-    message = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    is_read = Column(Boolean, default=False)
-
-class ProjectView(Base):
-    __tablename__ = "project_views"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    project_name = Column(String(100), nullable=False)
-    user_ip = Column(String(45))
-    viewed_at = Column(DateTime, default=datetime.utcnow)
+# Firestore Collections
+CONTACTS_COLLECTION = "contacts"
+PROJECT_VIEWS_COLLECTION = "project_views"
 
 # Marshmallow Schemas
 class ContactMessageSchema(Schema):
@@ -148,17 +148,6 @@ analytics_contacts_schema = AnalyticsContactsSchema()
 health_check_schema = HealthCheckSchema()
 api_response_schema = ApiResponseSchema()
 error_response_schema = ErrorResponseSchema()
-
-# Database dependency
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-# Create tables
-Base.metadata.create_all(bind=engine)
 
 # Portfolio data
 PROJECTS_DATA = [
@@ -265,6 +254,85 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "your-email@gmail.com")
 SENDER_PASSWORD = os.getenv("SENDER_PASSWORD", "your-app-password")
 
+# Firestore Helper Functions
+def create_contact_document(contact_data: dict) -> str:
+    """Create a new contact document in Firestore"""
+    try:
+        doc_data = {
+            "name": contact_data["name"],
+            "email": contact_data["email"],
+            "message": contact_data["message"],
+            "created_at": firestore.SERVER_TIMESTAMP,
+            "is_read": False
+        }
+        doc_ref = db.collection(CONTACTS_COLLECTION).document()
+        doc_ref.set(doc_data)
+        return doc_ref.id
+    except Exception as e:
+        logger.error(f"Error creating contact document: {str(e)}")
+        raise
+
+def create_project_view_document(view_data: dict) -> str:
+    """Create a new project view document in Firestore"""
+    try:
+        doc_data = {
+            "project_name": view_data["project_name"],
+            "user_ip": view_data.get("user_ip"),
+            "viewed_at": firestore.SERVER_TIMESTAMP
+        }
+        doc_ref = db.collection(PROJECT_VIEWS_COLLECTION).document()
+        doc_ref.set(doc_data)
+        return doc_ref.id
+    except Exception as e:
+        logger.error(f"Error creating project view document: {str(e)}")
+        raise
+
+def get_all_contacts() -> List[dict]:
+    """Get all contacts from Firestore"""
+    try:
+        contacts = []
+        docs = db.collection(CONTACTS_COLLECTION).stream()
+        for doc in docs:
+            contact_data = doc.to_dict()
+            contact_data["id"] = doc.id
+            contacts.append(contact_data)
+        return contacts
+    except Exception as e:
+        logger.error(f"Error fetching contacts: {str(e)}")
+        raise
+
+def get_all_project_views() -> List[dict]:
+    """Get all project views from Firestore"""
+    try:
+        views = []
+        docs = db.collection(PROJECT_VIEWS_COLLECTION).stream()
+        for doc in docs:
+            view_data = doc.to_dict()
+            view_data["id"] = doc.id
+            views.append(view_data)
+        return views
+    except Exception as e:
+        logger.error(f"Error fetching project views: {str(e)}")
+        raise
+
+def get_recent_documents(collection_name: str, days: int = 7) -> List[dict]:
+    """Get recent documents from a collection"""
+    try:
+        cutoff_date = datetime.now() - timedelta(days=days)
+        docs = db.collection(collection_name).where(
+            filter=FieldFilter("created_at", ">=", cutoff_date)
+        ).stream()
+        
+        documents = []
+        for doc in docs:
+            doc_data = doc.to_dict()
+            doc_data["id"] = doc.id
+            documents.append(doc_data)
+        return documents
+    except Exception as e:
+        logger.error(f"Error fetching recent documents from {collection_name}: {str(e)}")
+        raise
+
 # Utility functions
 def validate_and_load_data(schema: Schema, data: dict):
     """Validate and load data using Marshmallow schema"""
@@ -314,7 +382,7 @@ def send_contact_notification(contact_data: dict):
 async def root():
     """Root endpoint with API information"""
     return {
-        "message": "Portfolio API",
+        "message": "Portfolio API with Firebase Firestore",
         "version": "1.0.0",
         "endpoints": {
             "projects": "/api/projects",
@@ -351,11 +419,7 @@ async def get_project(project_id: int):
         raise HTTPException(status_code=500, detail="Failed to fetch project")
 
 @app.post("/api/projects/{project_id}/view")
-async def track_project_view(
-    project_id: int,
-    request: Request,
-    db: Session = Depends(get_db)
-):
+async def track_project_view(project_id: int, request: Request):
     """Track project view for analytics"""
     try:
         # Get request body
@@ -369,15 +433,14 @@ async def track_project_view(
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
         
-        # Create view record
-        db_view = ProjectView(
-            project_name=project["title"],
-            user_ip=view_data.get("user_ip")
-        )
-        db.add(db_view)
-        db.commit()
+        # Create view record in Firestore
+        view_data["project_name"] = project["title"]
+        document_id = create_project_view_document(view_data)
         
-        response_data = {"message": "View tracked successfully"}
+        response_data = {
+            "message": "View tracked successfully",
+            "document_id": document_id
+        }
         return api_response_schema.dump(response_data)
     except HTTPException:
         raise
@@ -396,11 +459,7 @@ async def get_skills():
         raise HTTPException(status_code=500, detail="Failed to fetch skills")
 
 @app.post("/api/contact")
-async def submit_contact(
-    request: Request,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
-):
+async def submit_contact(request: Request, background_tasks: BackgroundTasks):
     """Submit contact form"""
     try:
         # Get request body
@@ -409,21 +468,16 @@ async def submit_contact(
         # Validate input data
         contact_data = validate_and_load_data(contact_message_schema, body)
         
-        # Save to database
-        db_contact = Contact(
-            name=contact_data["name"],
-            email=contact_data["email"],
-            message=contact_data["message"]
-        )
-        db.add(db_contact)
-        db.commit()
+        # Save to Firestore
+        document_id = create_contact_document(contact_data)
         
         # Send email notification in background
         background_tasks.add_task(send_contact_notification, contact_data)
         
         response_data = {
             "message": "Contact message submitted successfully",
-            "status": "success"
+            "status": "success",
+            "document_id": document_id
         }
         return api_response_schema.dump(response_data)
     except HTTPException:
@@ -433,22 +487,26 @@ async def submit_contact(
         raise HTTPException(status_code=500, detail="Failed to submit contact message")
 
 @app.get("/api/analytics/views")
-async def get_project_views(db: Session = Depends(get_db)):
+async def get_project_views():
     """Get project view analytics"""
     try:
-        views = db.query(ProjectView).all()
+        views = get_all_project_views()
         
         # Group by project
         project_views = {}
         for view in views:
-            if view.project_name not in project_views:
-                project_views[view.project_name] = 0
-            project_views[view.project_name] += 1
+            project_name = view.get("project_name", "Unknown")
+            if project_name not in project_views:
+                project_views[project_name] = 0
+            project_views[project_name] += 1
+        
+        # Get recent views (last 7 days)
+        recent_views = get_recent_documents(PROJECT_VIEWS_COLLECTION, days=7)
         
         analytics_data = {
             "total_views": len(views),
             "project_views": project_views,
-            "recent_views": len([v for v in views if v.viewed_at > datetime.now() - timedelta(days=7)])
+            "recent_views": len(recent_views)
         }
         
         return analytics_views_schema.dump(analytics_data)
@@ -457,15 +515,21 @@ async def get_project_views(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="Failed to fetch analytics")
 
 @app.get("/api/analytics/contacts")
-async def get_contact_analytics(db: Session = Depends(get_db)):
+async def get_contact_analytics():
     """Get contact form analytics"""
     try:
-        contacts = db.query(Contact).all()
+        contacts = get_all_contacts()
+        
+        # Count unread contacts
+        unread_contacts = len([c for c in contacts if not c.get("is_read", False)])
+        
+        # Get recent contacts (last 7 days)
+        recent_contacts = get_recent_documents(CONTACTS_COLLECTION, days=7)
         
         analytics_data = {
             "total_contacts": len(contacts),
-            "unread_contacts": len([c for c in contacts if not c.is_read]),
-            "recent_contacts": len([c for c in contacts if c.created_at > datetime.now() - timedelta(days=7)])
+            "unread_contacts": unread_contacts,
+            "recent_contacts": len(recent_contacts)
         }
         
         return analytics_contacts_schema.dump(analytics_data)
@@ -476,10 +540,18 @@ async def get_contact_analytics(db: Session = Depends(get_db)):
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint"""
+    try:
+        # Test Firestore connection
+        db.collection("health_check").limit(1).get()
+        database_status = "connected"
+    except Exception as e:
+        logger.error(f"Database health check failed: {str(e)}")
+        database_status = "disconnected"
+    
     health_data = {
-        "status": "healthy",
+        "status": "healthy" if database_status == "connected" else "unhealthy",
         "timestamp": datetime.now(),
-        "database": "connected"
+        "database": database_status
     }
     return health_check_schema.dump(health_data)
 
