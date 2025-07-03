@@ -34,7 +34,7 @@ def initialize_firebase():
             cred = credentials.Certificate(os.getenv("FIREBASE_CREDENTIALS_PATH"))
         else:
             # Use service account JSON from environment variable
-            firebase_config = json.loads(os.getenv("FIREBASE_CREDENTIALS", "{}"))
+            firebase_config = json.loads(os.getenv("FIREBASE_SERVICE_ACCOUNT_KEY", "{}"))
             cred = credentials.Certificate(firebase_config)
         
         firebase_admin.initialize_app(cred)
