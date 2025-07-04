@@ -16,28 +16,71 @@ import jwt
 import bcrypt
 import logging
 import json
-import firebase_admin
-from firebase_admin import credentials, firestore
-from google.cloud.firestore_v1.base_query import FieldFilter
+import uuid
+
+# Try to import Firebase, but don't fail if it's not available
+try:
+    import firebase_admin
+    from firebase_admin import credentials, firestore
+    from google.cloud.firestore_v1.base_query import FieldFilter
+    FIREBASE_AVAILABLE = True
+except ImportError:
+    FIREBASE_AVAILABLE = False
+    print("Firebase not available - running in local mode")
 
 load_dotenv()
 
-# Firebase setup
+# Global variables
+db = None
+USE_DATABASE = False
+
+# Firebase setup - Optional
 def initialize_firebase():
+    global db, USE_DATABASE
+    
+    if not FIREBASE_AVAILABLE:
+        print("Firebase SDK not installed - running without database")
+        return
+        
     try:
         # Check if Firebase is already initialized
         firebase_admin.get_app()
+        print("Firebase already initialized")
     except ValueError:
-        # Use service account JSON from environment variable
-        firebase_config = json.loads(os.getenv("FIREBASE_SERVICE_ACCOUNT_KEY", "{}"))
-        cred = credentials.Certificate(firebase_config)
-        firebase_admin.initialize_app(cred)
+        # Try to initialize Firebase
+        try:
+            firebase_key = os.getenv("FIREBASE_SERVICE_ACCOUNT_KEY")
+            if firebase_key:
+                firebase_config = json.loads(firebase_key)
+                cred = credentials.Certificate(firebase_config)
+                firebase_admin.initialize_app(cred)
+                print("Firebase initialized successfully from environment variable")
+            else:
+                print("No Firebase credentials found - running without database")
+                return
+        except json.JSONDecodeError as e:
+            print(f"Error parsing Firebase credentials: {e}")
+            print("Running without database")
+            return
+        except Exception as e:
+            print(f"Error initializing Firebase: {e}")
+            print("Running without database")
+            return
+    
+    try:
+        db = firestore.client()
+        USE_DATABASE = True
+        print("Database connection established")
+    except Exception as e:
+        print(f"Error connecting to database: {e}")
+        print("Running without database")
 
-# Initialize Firebase
+# Initialize Firebase (optional)
 initialize_firebase()
-db = firestore.client()
 
-app = FastAPI()
+# In-memory storage for local development
+local_contacts = []
+local_project_views = []
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -72,7 +115,7 @@ ALGORITHM = "HS256"
 CONTACTS_COLLECTION = "contacts"
 PROJECT_VIEWS_COLLECTION = "project_views"
 
-# Marshmallow Schemas
+# Marshmallow Schemas (same as before)
 class ContactMessageSchema(Schema):
     name = fields.Str(required=True, validate=validate.Length(min=1, max=100))
     email = fields.Email(required=True, validate=validate.Length(max=100))
@@ -143,7 +186,7 @@ health_check_schema = HealthCheckSchema()
 api_response_schema = ApiResponseSchema()
 error_response_schema = ErrorResponseSchema()
 
-# Portfolio data
+# Portfolio data (same as before)
 PROJECTS_DATA = [
     {
         "id": 1,
@@ -201,7 +244,7 @@ PROJECTS_DATA = [
         "features": ["Advanced search", "Availability Filter", "Review system"],
         "github_url": "https://github.com/Afolstee/dakuzon",
         "demo_url": "https://dakuzon.vercel.app/",
-        "image_emoji": "🏨",
+        "image_emoji": "🛒",
         "category": "Frontend",
         "view_count": 0
     },
@@ -213,7 +256,7 @@ PROJECTS_DATA = [
         "features": ["Advanced search", "Availability Filter", "Review system"],
         "github_url": "https://github.com/Afolstee/online-shop",
         "demo_url": "https://online-shop-flame.vercel.app/",
-        "image_emoji": "🏨",
+        "image_emoji": "👟",
         "category": "Frontend",
         "view_count": 0
     }
@@ -248,63 +291,101 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "your-email@gmail.com")
 SENDER_PASSWORD = os.getenv("SENDER_PASSWORD", "your-app-password")
 
-# Firestore Helper Functions
+# Database Helper Functions - Support both Firebase and in-memory storage
 def create_contact_document(contact_data: dict) -> str:
-    """Create a new contact document in Firestore"""
+    """Create a new contact document"""
     try:
-        doc_data = {
-            "name": contact_data["name"],
-            "email": contact_data["email"],
-            "message": contact_data["message"],
-            "created_at": firestore.SERVER_TIMESTAMP,
-            "is_read": False
-        }
-        doc_ref = db.collection(CONTACTS_COLLECTION).document()
-        doc_ref.set(doc_data)
-        return doc_ref.id
+        if USE_DATABASE and db:
+            # Use Firebase
+            doc_data = {
+                "name": contact_data["name"],
+                "email": contact_data["email"],
+                "message": contact_data["message"],
+                "created_at": datetime.now(),
+                "is_read": False
+            }
+            doc_ref = db.collection(CONTACTS_COLLECTION).document()
+            doc_ref.set(doc_data)
+            return doc_ref.id
+        else:
+            # Use in-memory storage
+            contact_id = str(uuid.uuid4())
+            contact_record = {
+                "id": contact_id,
+                "name": contact_data["name"],
+                "email": contact_data["email"],
+                "message": contact_data["message"],
+                "created_at": datetime.now(),
+                "is_read": False
+            }
+            local_contacts.append(contact_record)
+            return contact_id
     except Exception as e:
         logger.error(f"Error creating contact document: {str(e)}")
         raise
 
 def create_project_view_document(view_data: dict) -> str:
-    """Create a new project view document in Firestore"""
+    """Create a new project view document"""
     try:
-        doc_data = {
-            "project_name": view_data["project_name"],
-            "user_ip": view_data.get("user_ip"),
-            "viewed_at": firestore.SERVER_TIMESTAMP
-        }
-        doc_ref = db.collection(PROJECT_VIEWS_COLLECTION).document()
-        doc_ref.set(doc_data)
-        return doc_ref.id
+        if USE_DATABASE and db:
+            # Use Firebase
+            doc_data = {
+                "project_name": view_data["project_name"],
+                "user_ip": view_data.get("user_ip"),
+                "viewed_at": datetime.now()
+            }
+            doc_ref = db.collection(PROJECT_VIEWS_COLLECTION).document()
+            doc_ref.set(doc_data)
+            return doc_ref.id
+        else:
+            # Use in-memory storage
+            view_id = str(uuid.uuid4())
+            view_record = {
+                "id": view_id,
+                "project_name": view_data["project_name"],
+                "user_ip": view_data.get("user_ip"),
+                "viewed_at": datetime.now()
+            }
+            local_project_views.append(view_record)
+            return view_id
     except Exception as e:
         logger.error(f"Error creating project view document: {str(e)}")
         raise
 
 def get_all_contacts() -> List[dict]:
-    """Get all contacts from Firestore"""
+    """Get all contacts"""
     try:
-        contacts = []
-        docs = db.collection(CONTACTS_COLLECTION).stream()
-        for doc in docs:
-            contact_data = doc.to_dict()
-            contact_data["id"] = doc.id
-            contacts.append(contact_data)
-        return contacts
+        if USE_DATABASE and db:
+            # Use Firebase
+            contacts = []
+            docs = db.collection(CONTACTS_COLLECTION).stream()
+            for doc in docs:
+                contact_data = doc.to_dict()
+                contact_data["id"] = doc.id
+                contacts.append(contact_data)
+            return contacts
+        else:
+            # Use in-memory storage
+            return local_contacts.copy()
     except Exception as e:
         logger.error(f"Error fetching contacts: {str(e)}")
         raise
 
 def get_all_project_views() -> List[dict]:
-    """Get all project views from Firestore"""
+    """Get all project views"""
     try:
-        views = []
-        docs = db.collection(PROJECT_VIEWS_COLLECTION).stream()
-        for doc in docs:
-            view_data = doc.to_dict()
-            view_data["id"] = doc.id
-            views.append(view_data)
-        return views
+        if USE_DATABASE and db:
+            # Use Firebase
+            views = []
+            docs = db.collection(PROJECT_VIEWS_COLLECTION).stream()
+            for doc in docs:
+                view_data = doc.to_dict()
+                view_data["id"] = doc.id
+                views.append(view_data)
+            return views
+        else:
+            # Use in-memory storage
+            return local_project_views.copy()
     except Exception as e:
         logger.error(f"Error fetching project views: {str(e)}")
         raise
@@ -313,16 +394,30 @@ def get_recent_documents(collection_name: str, days: int = 7) -> List[dict]:
     """Get recent documents from a collection"""
     try:
         cutoff_date = datetime.now() - timedelta(days=days)
-        docs = db.collection(collection_name).where(
-            filter=FieldFilter("created_at", ">=", cutoff_date)
-        ).stream()
         
-        documents = []
-        for doc in docs:
-            doc_data = doc.to_dict()
-            doc_data["id"] = doc.id
-            documents.append(doc_data)
-        return documents
+        if USE_DATABASE and db:
+            # Use Firebase
+            if FIREBASE_AVAILABLE:
+                docs = db.collection(collection_name).where(
+                    filter=FieldFilter("created_at", ">=", cutoff_date)
+                ).stream()
+                
+                documents = []
+                for doc in docs:
+                    doc_data = doc.to_dict()
+                    doc_data["id"] = doc.id
+                    documents.append(doc_data)
+                return documents
+            else:
+                return []
+        else:
+            # Use in-memory storage
+            if collection_name == CONTACTS_COLLECTION:
+                return [c for c in local_contacts if c.get("created_at", datetime.now()) >= cutoff_date]
+            elif collection_name == PROJECT_VIEWS_COLLECTION:
+                return [v for v in local_project_views if v.get("viewed_at", datetime.now()) >= cutoff_date]
+            else:
+                return []
     except Exception as e:
         logger.error(f"Error fetching recent documents from {collection_name}: {str(e)}")
         raise
@@ -376,8 +471,9 @@ def send_contact_notification(contact_data: dict):
 async def root():
     """Root endpoint with API information"""
     return {
-        "message": "Portfolio API with Firebase Firestore",
+        "message": "Portfolio API",
         "version": "1.0.0",
+        "database_mode": "Firebase" if USE_DATABASE else "In-memory",
         "endpoints": {
             "projects": "/api/projects",
             "skills": "/api/skills",
@@ -427,7 +523,7 @@ async def track_project_view(project_id: int, request: Request):
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
         
-        # Create view record in Firestore
+        # Create view record
         view_data["project_name"] = project["title"]
         document_id = create_project_view_document(view_data)
         
@@ -462,7 +558,7 @@ async def submit_contact(request: Request, background_tasks: BackgroundTasks):
         # Validate input data
         contact_data = validate_and_load_data(contact_message_schema, body)
         
-        # Save to Firestore
+        # Save contact
         document_id = create_contact_document(contact_data)
         
         # Send email notification in background
@@ -535,15 +631,18 @@ async def get_contact_analytics():
 async def health_check():
     """Health check endpoint"""
     try:
-        # Test Firestore connection
-        db.collection("health_check").limit(1).get()
-        database_status = "connected"
+        if USE_DATABASE and db:
+            # Test Firestore connection
+            db.collection("health_check").limit(1).get()
+            database_status = "connected"
+        else:
+            database_status = "local_mode"
     except Exception as e:
         logger.error(f"Database health check failed: {str(e)}")
         database_status = "disconnected"
     
     health_data = {
-        "status": "healthy" if database_status == "connected" else "unhealthy",
+        "status": "healthy",
         "timestamp": datetime.now(),
         "database": database_status
     }

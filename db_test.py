@@ -1,106 +1,119 @@
-import socket
-import subprocess
-import requests
-import dns.resolver
-import psycopg2
-from sqlalchemy import create_engine
+#!/usr/bin/env python3
+"""
+Script to verify Firebase service account file path and contents
+Run this before starting your main application
+"""
 
-def test_dns_resolution():
-    hostname = "db.rayangbafjrzdqxlxxrl.supabase.co"
-    project_url = "https://rayangbafjrzdqxlxxrl.supabase.co"
-    
-    print("=== DNS Resolution Tests ===")
-    
-    # Test 1: Basic socket resolution
-    try:
-        ip = socket.gethostbyname(hostname)
-        print(f"✅ socket.gethostbyname: {hostname} → {ip}")
-    except socket.gaierror as e:
-        print(f"❌ socket.gethostbyname failed: {e}")
-    
-    # Test 2: Using DNS resolver with different servers
-    dns_servers = ['8.8.8.8', '1.1.1.1', '208.67.222.222']  # Google, Cloudflare, OpenDNS
-    
-    for dns_server in dns_servers:
-        try:
-            resolver = dns.resolver.Resolver()
-            resolver.nameservers = [dns_server]
-            result = resolver.resolve(hostname, 'A')
-            for ip in result:
-                print(f"✅ DNS Server {dns_server}: {hostname} → {ip}")
-                break
-        except Exception as e:
-            print(f"❌ DNS Server {dns_server} failed: {e}")
-    
-    # Test 3: System nslookup
-    try:
-        result = subprocess.run(['nslookup', hostname], capture_output=True, text=True, timeout=10)
-        if result.returncode == 0:
-            print(f"✅ nslookup successful")
-            print(f"Output: {result.stdout.strip()}")
-        else:
-            print(f"❌ nslookup failed: {result.stderr}")
-    except Exception as e:
-        print(f"❌ nslookup command failed: {e}")
-    
-    # Test 4: Check if project exists via HTTPS
-    try:
-        response = requests.get(project_url, timeout=10)
-        print(f"✅ HTTPS Project URL accessible: {response.status_code}")
-    except Exception as e:
-        print(f"❌ HTTPS Project URL failed: {e}")
-    
-    # Test 5: Try alternative connection methods
-    print("\n=== Alternative Connection Tests ===")
-    
-    # Test with connection pooler (port 6543)
-    pooler_url = "postgresql://postgres:YOUR_PASSWORD@db.rayangbafjrzdqxlxxrl.supabase.co:6543/postgres?sslmode=require"
-    print(f"Try connection pooler: {pooler_url}")
-    
-    # Test with different SSL modes
-    ssl_modes = ['require', 'prefer', 'allow', 'disable']
-    for ssl_mode in ssl_modes:
-        test_url = f"postgresql://postgres:YOUR_PASSWORD@db.rayangbafjrzdqxlxxrl.supabase.co:5432/postgres?sslmode={ssl_mode}"
-        print(f"Try SSL mode '{ssl_mode}': {test_url}")
+import os
+import json
+from pathlib import Path
 
-def test_network_connectivity():
-    print("\n=== Network Connectivity Tests ===")
+def check_firebase_file():
+    print("🔍 Firebase Service Account File Checker")
+    print("=" * 50)
     
-    # Test basic internet connectivity
-    test_hosts = [
-        "google.com",
-        "supabase.com",
-        "github.com"
+    # Check current directory
+    current_dir = os.getcwd()
+    print(f"📁 Current directory: {current_dir}")
+    
+    # List all JSON files in current directory
+    json_files = list(Path('.').glob('*.json'))
+    print(f"\n📋 JSON files found: {len(json_files)}")
+    for file in json_files:
+        print(f"  - {file}")
+    
+    # Check common file names
+    common_names = [
+        "firebase-service-account.json",
+        "service-account.json",
+        "serviceAccountKey.json"
     ]
     
-    for host in test_hosts:
-        try:
-            ip = socket.gethostbyname(host)
-            print(f"✅ {host} resolves to {ip}")
-        except Exception as e:
-            print(f"❌ {host} resolution failed: {e}")
+    found_files = []
+    for name in common_names:
+        if os.path.exists(name):
+            found_files.append(name)
+    
+    if found_files:
+        print(f"\n✅ Found common Firebase files:")
+        for file in found_files:
+            print(f"  - {file}")
+    else:
+        print(f"\n❌ No common Firebase files found")
+    
+    # Check for any file with 'firebase' in the name
+    firebase_files = list(Path('.').glob('*firebase*.json'))
+    if firebase_files:
+        print(f"\n🔥 Files with 'firebase' in name:")
+        for file in firebase_files:
+            print(f"  - {file}")
+    
+    # If we found files, let's test them
+    test_files = found_files + [str(f) for f in firebase_files]
+    
+    if test_files:
+        print(f"\n🧪 Testing Firebase files:")
+        for file_path in test_files:
+            test_firebase_file(file_path)
+    else:
+        print(f"\n❌ No Firebase service account files found!")
+        print("📝 To fix this:")
+        print("1. Download your Firebase service account key from Firebase Console")
+        print("2. Place it in this directory:")
+        print(f"   {current_dir}")
+        print("3. Name it 'firebase-service-account.json' or update your .env file")
 
-def get_system_dns_info():
-    print("\n=== System DNS Information ===")
+def test_firebase_file(file_path):
+    print(f"\n  Testing: {file_path}")
     
     try:
-        # Get system DNS configuration (Windows)
-        result = subprocess.run(['ipconfig', '/all'], capture_output=True, text=True)
-        lines = result.stdout.split('\n')
-        dns_lines = [line.strip() for line in lines if 'DNS Servers' in line or 'DNS' in line]
-        for line in dns_lines[:5]:  # Show first 5 DNS-related lines
-            print(line)
+        # Check if file exists
+        if not os.path.exists(file_path):
+            print(f"    ❌ File not found")
+            return
+        
+        # Check file size
+        file_size = os.path.getsize(file_path)
+        print(f"    📏 File size: {file_size} bytes")
+        
+        if file_size == 0:
+            print(f"    ❌ File is empty")
+            return
+        
+        # Try to read as JSON
+        with open(file_path, 'r') as f:
+            data = json.load(f)
+        
+        print(f"    ✅ Valid JSON")
+        
+        # Check required fields
+        required_fields = ['type', 'project_id', 'private_key', 'client_email']
+        missing_fields = []
+        
+        for field in required_fields:
+            if field not in data:
+                missing_fields.append(field)
+        
+        if missing_fields:
+            print(f"    ❌ Missing required fields: {missing_fields}")
+        else:
+            print(f"    ✅ All required fields present")
+            print(f"    📋 Project ID: {data.get('project_id')}")
+            print(f"    📧 Client Email: {data.get('client_email')}")
+        
+        # Generate .env entry
+        abs_path = os.path.abspath(file_path)
+        rel_path = os.path.relpath(file_path)
+        
+        print(f"    📝 For your .env file, use:")
+        print(f"      FIREBASE_SERVICE_ACCOUNT_PATH={rel_path}")
+        print(f"    📝 Or absolute path:")
+        print(f"      FIREBASE_SERVICE_ACCOUNT_PATH={abs_path}")
+        
+    except json.JSONDecodeError as e:
+        print(f"    ❌ Invalid JSON: {e}")
     except Exception as e:
-        print(f"Could not get DNS info: {e}")
+        print(f"    ❌ Error reading file: {e}")
 
 if __name__ == "__main__":
-    test_dns_resolution()
-    test_network_connectivity()
-    get_system_dns_info()
-    
-    print("\n=== Recommendations ===")
-    print("1. If all DNS tests fail, try changing your DNS servers to 8.8.8.8 and 8.8.4.4")
-    print("2. If HTTPS works but database doesn't, try the connection pooler (port 6543)")
-    print("3. Try connecting from a different network (mobile hotspot)")
-    print("4. Check if your firewall/antivirus is blocking database connections")
-    print("5. Verify your Supabase project is not paused in the dashboard")
+    check_firebase_file()
