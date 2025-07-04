@@ -280,7 +280,7 @@ SKILLS_DATA = [
     },
     {
         "name": "DevOps & Tools",
-        "technologies": ["Git", "Docker", "AWS", "Vercel", "Railway", "Nginx", "Linux"],
+        "technologies": ["Git", "Vercel", "Railway", "Render"],
         "icon": "🚀"
     }
 ]
